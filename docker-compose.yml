@@ -1,0 +1,85 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: pos-db
+    environment:
+      POSTGRES_USER: pos
+      POSTGRES_PASSWORD: possecret
+      POSTGRES_DB: pos_enterprise
+    ports:
+      - '5432:5432'
+    volumes:
+      - pos_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U pos -d pos_enterprise']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - pos-net
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: pos-backend
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgresql://pos:possecret@db:5432/pos_enterprise?schema=public
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-to-a-long-random-string-at-least-32-chars}
+      JWT_EXPIRES_IN: 8h
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:8080}
+    ports:
+      - '4000:4000'
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:4000/health']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - pos-net
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: pos-frontend
+    ports:
+      - '8080:80'
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - pos-net
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      target: builder
+    environment:
+      DATABASE_URL: postgresql://pos:possecret@db:5432/pos_enterprise?schema=public
+    command: sh -c "npx prisma migrate deploy && npx tsx prisma/seed.ts"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - pos-net
+    profiles:
+      - tools
+
+volumes:
+  pos_pgdata:
+
+networks:
+  pos-net:
+    driver: bridge

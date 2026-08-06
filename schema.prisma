@@ -1,0 +1,418 @@
+// Enterprise POS - Prisma Schema
+// Supports multi-branch, FIFO inventory costing, full audit trail
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum Role {
+  ADMIN
+  MANAGER
+  CASHIER
+  INVENTORY
+  ACCOUNTANT
+}
+
+enum StockMovementType {
+  PURCHASE
+  SALE
+  RETURN_SALE
+  RETURN_PURCHASE
+  ADJUSTMENT
+  TRANSFER_IN
+  TRANSFER_OUT
+  DAMAGE
+  EXPIRED
+}
+
+enum SaleStatus {
+  COMPLETED
+  VOIDED
+  REFUNDED
+  PARTIAL_REFUND
+}
+
+enum PurchaseStatus {
+  DRAFT
+  ORDERED
+  PARTIAL
+  RECEIVED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  MOBILE
+  BANK_TRANSFER
+  CREDIT
+  MIXED
+}
+
+// ─── Core Models ─────────────────────────────────────────────────────────────
+
+model Branch {
+  id              String   @id @default(cuid())
+  code            String   @unique
+  name            String
+  address         String?
+  phone           String?
+  /// ISO 4217 currency code (e.g. USD, PKR, EUR)
+  currencyCode    String   @default("USD")
+  currencySymbol  String   @default("$")
+  /// Default tax profile for this branch (optional)
+  taxProfileId    String?
+  taxProfile      TaxProfile? @relation(fields: [taxProfileId], references: [id])
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  users            User[]
+  products         Product[]           // branch-specific pricing if needed
+  inventoryLots    InventoryLot[]
+  sales            Sale[]
+  purchases        PurchaseOrder[]
+  stockMovements   StockMovement[]
+  cashRegisters    CashRegister[]
+  customers        Customer[]
+
+  @@map("branches")
+}
+
+/// Reusable tax profiles (VAT, GST, sales tax, etc.)
+model TaxProfile {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  rate        Decimal  @db.Decimal(5, 2) // percent, e.g. 17.00
+  inclusive   Boolean  @default(false)  // true = prices include tax
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  branches    Branch[]
+  products    Product[]
+
+  @@map("tax_profiles")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  role         Role     @default(CASHIER)
+  isActive     Boolean  @default(true)
+  branchId     String?
+  branch       Branch?  @relation(fields: [branchId], references: [id])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sales            Sale[]            @relation("SaleCashier")
+  voidedSales      Sale[]            @relation("SaleVoidedBy")
+  auditLogs        AuditLog[]
+  cashRegisters    CashRegister[]
+
+  @@map("users")
+}
+
+model Category {
+  id          String    @id @default(cuid())
+  name        String
+  description String?
+  parentId    String?
+  parent      Category? @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children    Category[] @relation("CategoryHierarchy")
+  products    Product[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@map("categories")
+}
+
+model Product {
+  id              String   @id @default(cuid())
+  sku             String   @unique
+  barcode         String?  @unique
+  name            String
+  description     String?
+  categoryId      String?
+  category        Category? @relation(fields: [categoryId], references: [id])
+  unit            String   @default("pcs") // pcs, kg, liter, etc.
+  costPrice       Decimal  @db.Decimal(12, 4) // last purchase cost (reference)
+  sellingPrice    Decimal  @db.Decimal(12, 2)
+  taxRate         Decimal  @default(0) @db.Decimal(5, 2)
+  reorderLevel    Int      @default(10)
+  isActive        Boolean  @default(true)
+  trackInventory  Boolean  @default(true)
+  branchId        String?  // null = global product
+  branch          Branch?  @relation(fields: [branchId], references: [id])
+  /// Optional tax profile override (falls back to product.taxRate or branch default)
+  taxProfileId    String?
+  taxProfile      TaxProfile? @relation(fields: [taxProfileId], references: [id])
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  inventoryLots    InventoryLot[]
+  saleItems        SaleItem[]
+  purchaseItems    PurchaseItem[]
+  stockMovements   StockMovement[]
+
+  @@index([barcode])
+  @@index([sku])
+  @@index([name])
+  @@map("products")
+}
+
+// ─── FIFO Inventory Core ─────────────────────────────────────────────────────
+
+/// Each incoming stock creates a new lot. Sales consume from oldest lots first (FIFO).
+model InventoryLot {
+  id            String   @id @default(cuid())
+  productId     String
+  product       Product  @relation(fields: [productId], references: [id])
+  branchId      String
+  branch        Branch   @relation(fields: [branchId], references: [id])
+  purchaseItemId String? // link to the purchase that created this lot
+  purchaseItem  PurchaseItem? @relation(fields: [purchaseItemId], references: [id])
+  lotNumber     String?  // optional batch/lot/serial
+  quantity      Decimal  @db.Decimal(12, 4) // remaining quantity in this lot
+  originalQty   Decimal  @db.Decimal(12, 4)
+  unitCost      Decimal  @db.Decimal(12, 4) // cost per unit for this lot
+  receivedAt    DateTime @default(now())
+  expiryDate    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  fifoConsumptions FifoConsumption[]
+
+  @@index([productId, branchId, receivedAt]) // critical for FIFO ordering
+  @@map("inventory_lots")
+}
+
+/// Records exactly which lots were consumed by a sale line (for accurate COGS)
+model FifoConsumption {
+  id            String       @id @default(cuid())
+  saleItemId    String
+  saleItem      SaleItem     @relation(fields: [saleItemId], references: [id])
+  inventoryLotId String
+  inventoryLot  InventoryLot @relation(fields: [inventoryLotId], references: [id])
+  quantity      Decimal      @db.Decimal(12, 4)
+  unitCost      Decimal      @db.Decimal(12, 4)
+  totalCost     Decimal      @db.Decimal(14, 4)
+  createdAt     DateTime     @default(now())
+
+  @@map("fifo_consumptions")
+}
+
+model StockMovement {
+  id            String            @id @default(cuid())
+  productId     String
+  product       Product           @relation(fields: [productId], references: [id])
+  branchId      String
+  branch        Branch            @relation(fields: [branchId], references: [id])
+  type          StockMovementType
+  quantity      Decimal           @db.Decimal(12, 4) // positive = in, negative = out
+  unitCost      Decimal?          @db.Decimal(12, 4)
+  referenceId   String?           // saleId, purchaseId, etc.
+  referenceType String?
+  notes         String?
+  createdById   String?
+  createdAt     DateTime          @default(now())
+
+  @@index([productId, branchId, createdAt])
+  @@map("stock_movements")
+}
+
+// ─── Sales ───────────────────────────────────────────────────────────────────
+
+model Sale {
+  id              String        @id @default(cuid())
+  invoiceNumber   String        @unique
+  branchId        String
+  branch          Branch        @relation(fields: [branchId], references: [id])
+  cashierId       String
+  cashier         User          @relation("SaleCashier", fields: [cashierId], references: [id])
+  customerId      String?
+  customer        Customer?     @relation(fields: [customerId], references: [id])
+  status          SaleStatus    @default(COMPLETED)
+  subtotal        Decimal       @db.Decimal(14, 2)
+  discountAmount  Decimal       @default(0) @db.Decimal(14, 2)
+  taxAmount       Decimal       @default(0) @db.Decimal(14, 2)
+  totalAmount     Decimal       @db.Decimal(14, 2)
+  paidAmount      Decimal       @db.Decimal(14, 2)
+  changeAmount    Decimal       @default(0) @db.Decimal(14, 2)
+  paymentMethod   PaymentMethod @default(CASH)
+  notes           String?
+  voidedAt        DateTime?
+  voidedById      String?
+  voidedBy        User?         @relation("SaleVoidedBy", fields: [voidedById], references: [id])
+  voidReason      String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  items           SaleItem[]
+  payments        SalePayment[]
+
+  @@index([branchId, createdAt])
+  @@index([invoiceNumber])
+  @@map("sales")
+}
+
+model SaleItem {
+  id              String   @id @default(cuid())
+  saleId          String
+  sale            Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  productId       String
+  product         Product  @relation(fields: [productId], references: [id])
+  quantity        Decimal  @db.Decimal(12, 4)
+  unitPrice       Decimal  @db.Decimal(12, 2)
+  discount        Decimal  @default(0) @db.Decimal(12, 2)
+  taxRate         Decimal  @default(0) @db.Decimal(5, 2)
+  taxAmount       Decimal  @default(0) @db.Decimal(12, 2)
+  lineTotal       Decimal  @db.Decimal(14, 2)
+  costOfGoods     Decimal  @default(0) @db.Decimal(14, 4) // calculated via FIFO
+  createdAt       DateTime @default(now())
+
+  fifoConsumptions FifoConsumption[]
+
+  @@map("sale_items")
+}
+
+model SalePayment {
+  id            String        @id @default(cuid())
+  saleId        String
+  sale          Sale          @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  method        PaymentMethod
+  amount        Decimal       @db.Decimal(14, 2)
+  reference     String?       // card last4, transaction id, etc.
+  createdAt     DateTime      @default(now())
+
+  @@map("sale_payments")
+}
+
+// ─── Purchases ───────────────────────────────────────────────────────────────
+
+model Supplier {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  contactName String?
+  email       String?
+  phone       String?
+  address     String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  purchaseOrders PurchaseOrder[]
+
+  @@map("suppliers")
+}
+
+model PurchaseOrder {
+  id              String         @id @default(cuid())
+  poNumber        String         @unique
+  supplierId      String
+  supplier        Supplier       @relation(fields: [supplierId], references: [id])
+  branchId        String
+  branch          Branch         @relation(fields: [branchId], references: [id])
+  status          PurchaseStatus @default(DRAFT)
+  orderDate       DateTime       @default(now())
+  expectedDate    DateTime?
+  receivedDate    DateTime?
+  subtotal        Decimal        @default(0) @db.Decimal(14, 2)
+  taxAmount       Decimal        @default(0) @db.Decimal(14, 2)
+  totalAmount     Decimal        @default(0) @db.Decimal(14, 2)
+  notes           String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  items           PurchaseItem[]
+
+  @@map("purchase_orders")
+}
+
+model PurchaseItem {
+  id              String        @id @default(cuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  productId       String
+  product         Product       @relation(fields: [productId], references: [id])
+  quantity        Decimal       @db.Decimal(12, 4)
+  receivedQty     Decimal       @default(0) @db.Decimal(12, 4)
+  unitCost        Decimal       @db.Decimal(12, 4)
+  taxRate         Decimal       @default(0) @db.Decimal(5, 2)
+  lineTotal       Decimal       @db.Decimal(14, 2)
+  createdAt       DateTime      @default(now())
+
+  inventoryLots   InventoryLot[]
+
+  @@map("purchase_items")
+}
+
+// ─── Customers & Cash ────────────────────────────────────────────────────────
+
+model Customer {
+  id          String   @id @default(cuid())
+  code        String?  @unique
+  name        String
+  email       String?
+  phone       String?
+  address     String?
+  loyaltyPts  Int      @default(0)
+  branchId    String?
+  branch      Branch?  @relation(fields: [branchId], references: [id])
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  sales       Sale[]
+
+  @@map("customers")
+}
+
+model CashRegister {
+  id            String   @id @default(cuid())
+  branchId      String
+  branch        Branch   @relation(fields: [branchId], references: [id])
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  openingFloat  Decimal  @db.Decimal(14, 2)
+  closingCash   Decimal? @db.Decimal(14, 2)
+  expectedCash  Decimal? @db.Decimal(14, 2)
+  difference    Decimal? @db.Decimal(14, 2)
+  openedAt      DateTime @default(now())
+  closedAt      DateTime?
+  notes         String?
+
+  @@map("cash_registers")
+}
+
+// ─── Audit ───────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
+  action      String
+  entity      String
+  entityId    String?
+  oldValues   Json?
+  newValues   Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
