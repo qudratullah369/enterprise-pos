@@ -42,7 +42,7 @@ export class AuthService {
     };
 
     const token = jwt.sign(payload, env.JWT_SECRET, {
-      expiresIn: env.JWT_EXPIRES_IN,
+      expiresIn: env.JWT_EXPIRES_IN as jwt.SignOptions['expiresIn'],
     });
 
     return {
@@ -78,9 +78,11 @@ export class AuthService {
       where: { id: userId },
       include: { branch: true },
     });
+
     if (!user || !user.isActive) {
       throw new AppError('User not found', 404);
     }
+
     return {
       id: user.id,
       email: user.email,

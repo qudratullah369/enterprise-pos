@@ -23,7 +23,8 @@ router.post(
   async (req, res, next) => {
     try {
       const body = printSchema.parse(req.body ?? {});
-      const data = await printersService.printSaleReceipt(req.params.saleId, body);
+      const saleId = req.params.saleId as string;
+      const data = await printersService.printSaleReceipt(saleId, body);
       res.json({ success: true, data });
     } catch (err) {
       next(err);

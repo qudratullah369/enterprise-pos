@@ -53,7 +53,8 @@ router.get('/', authorize(Role.ADMIN, Role.MANAGER, Role.INVENTORY), async (req,
 
 router.get('/:id', authorize(Role.ADMIN, Role.MANAGER, Role.INVENTORY), async (req, res, next) => {
   try {
-    const po = await purchasesService.findById(req.params.id);
+    const id = req.params.id as string;
+    const po = await purchasesService.findById(id);
     res.json({ success: true, data: po });
   } catch (err) {
     next(err);
@@ -79,8 +80,10 @@ router.post(
   async (req, res, next) => {
     try {
       const body = receiveSchema.parse(req.body);
+      const id = req.params.id as string;
+
       const po = await purchasesService.receive(
-        req.params.id,
+        id,
         body.items.map((i) => ({
           ...i,
           expiryDate: i.expiryDate ? new Date(i.expiryDate) : undefined,

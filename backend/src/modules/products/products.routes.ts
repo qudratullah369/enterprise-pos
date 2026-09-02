@@ -106,7 +106,8 @@ router.post('/', authorize(Role.ADMIN, Role.MANAGER, Role.INVENTORY), async (req
 router.patch('/:id', authorize(Role.ADMIN, Role.MANAGER, Role.INVENTORY), async (req, res, next) => {
   try {
     const body = updateSchema.parse(req.body);
-    const product = await productsService.update(req.params.id, body);
+    const id = req.params.id as string;
+    const product = await productsService.update(id, body);
     res.json({ success: true, data: product });
   } catch (err) {
     next(err);

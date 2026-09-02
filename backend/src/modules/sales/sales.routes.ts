@@ -43,7 +43,8 @@ router.post('/', authorize(Role.ADMIN, Role.MANAGER, Role.CASHIER), async (req, 
 router.post('/:id/void', authorize(Role.ADMIN, Role.MANAGER), async (req, res, next) => {
   try {
     const reason = z.string().min(3).parse(req.body.reason);
-    const sale = await salesService.voidSale(req.params.id, req.user!.userId, reason);
+    const id = req.params.id as string;
+    const sale = await salesService.voidSale(id, req.user!.userId, reason);
     res.json({ success: true, data: sale });
   } catch (err) {
     next(err);
@@ -68,8 +69,9 @@ router.post(
   async (req, res, next) => {
     try {
       const body = refundSchema.parse(req.body);
+      const id = req.params.id as string;
       const sale = await salesService.refundSale(
-        req.params.id,
+        id,
         req.user!.userId,
         body.items,
         body.reason
@@ -82,4 +84,3 @@ router.post(
 );
 
 export default router;
-

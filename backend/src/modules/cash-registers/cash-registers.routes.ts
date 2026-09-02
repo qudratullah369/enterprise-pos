@@ -58,8 +58,10 @@ router.post(
       const isManager =
         req.user!.role === Role.ADMIN || req.user!.role === Role.MANAGER;
 
+      const id = req.params.id as string;
+
       const data = await cashRegistersService.close({
-        registerId: req.params.id,
+        registerId: id,
         userId: req.user!.userId,
         closingCash: body.closingCash,
         notes: body.notes,
@@ -78,7 +80,8 @@ router.get(
   authorize(Role.ADMIN, Role.MANAGER, Role.CASHIER, Role.ACCOUNTANT),
   async (req, res, next) => {
     try {
-      const data = await cashRegistersService.getSessionSummary(req.params.id);
+      const id = req.params.id as string;
+      const data = await cashRegistersService.getSessionSummary(id);
       res.json({ success: true, data });
     } catch (err) {
       next(err);

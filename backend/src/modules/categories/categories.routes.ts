@@ -78,7 +78,8 @@ router.patch(
   async (req, res, next) => {
     try {
       const body = updateSchema.parse(req.body);
-      const data = await categoriesService.update(req.params.id, body);
+      const id = req.params.id as string;
+      const data = await categoriesService.update(id, body);
       res.json({ success: true, data });
     } catch (err) {
       next(err);
@@ -91,7 +92,8 @@ router.delete(
   authorize(Role.ADMIN, Role.MANAGER),
   async (req, res, next) => {
     try {
-      const data = await categoriesService.delete(req.params.id);
+      const id = req.params.id as string;
+      const data = await categoriesService.delete(id);
       res.json({ success: true, data });
     } catch (err) {
       next(err);

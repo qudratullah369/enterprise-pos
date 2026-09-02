@@ -15,7 +15,8 @@ router.get(
   authorize(Role.ADMIN, Role.MANAGER, Role.CASHIER, Role.ACCOUNTANT),
   async (req, res, next) => {
     try {
-      const data = await receiptsService.getSaleReceipt(req.params.saleId);
+      const saleId = req.params.saleId as string;
+      const data = await receiptsService.getSaleReceipt(saleId);
       res.json({ success: true, data });
     } catch (err) {
       next(err);
@@ -32,7 +33,8 @@ router.get(
   authorize(Role.ADMIN, Role.MANAGER, Role.CASHIER, Role.ACCOUNTANT),
   async (req, res, next) => {
     try {
-      const data = await receiptsService.getSaleReceipt(req.params.saleId);
+      const saleId = req.params.saleId as string;
+      const data = await receiptsService.getSaleReceipt(saleId);
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.send(data.html);
     } catch (err) {
@@ -50,7 +52,8 @@ router.get(
   authorize(Role.ADMIN, Role.MANAGER, Role.CASHIER),
   async (req, res, next) => {
     try {
-      const data = await receiptsService.getSaleReceipt(req.params.saleId);
+      const saleId = req.params.saleId as string;
+      const data = await receiptsService.getSaleReceipt(saleId);
       const buf = Buffer.from(data.escposBase64, 'base64');
       res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader(
