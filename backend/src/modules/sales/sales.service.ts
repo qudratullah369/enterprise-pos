@@ -6,6 +6,7 @@
 import { PrismaClient, Prisma, PaymentMethod, SaleStatus } from '@prisma/client';
 import { fifoService } from '../inventory/fifo.service.js';
 import { AppError } from '../../shared/errors/AppError.js';
+import { assertBranchAccess } from '../../shared/authorization/branch.js';
 
 const prisma = new PrismaClient();
 
@@ -205,14 +206,25 @@ export class SalesService {
   /**
    * Void a sale and restore inventory via reverse FIFO.
    */
-  async voidSale(saleId: string, voidedById: string, reason: string) {
+  async voidSale(params: {
+    saleId: string;
+    user: { userId: string; role: string; branchId?: string | null };
+    reason: string;
+  }) {
     return prisma.$transaction(async (tx) => {
       const sale = await tx.sale.findUnique({
-        where: { id: saleId },
+        where: { id: params.saleId },
         include: { items: true },
       });
 
       if (!sale) throw new AppError('Sale not found', 404);
+
+      // Branch isolation
+      assertBranchAccess(
+        { role: params.user.role, branchId: params.user.branchId },
+        sale.branchId,
+      );
+
       if (sale.status === SaleStatus.VOIDED) {
         throw new AppError('Sale is already voided', 400);
       }
@@ -233,19 +245,19 @@ export class SalesService {
             unitCost: item.costOfGoods.div(item.quantity),
             referenceId: sale.id,
             referenceType: 'SALE_VOID',
-            createdById: voidedById,
-            notes: reason,
+            createdById: params.user.userId,
+            notes: params.reason,
           },
         });
       }
 
       return tx.sale.update({
-        where: { id: saleId },
+        where: { id: params.saleId },
         data: {
           status: SaleStatus.VOIDED,
           voidedAt: new Date(),
-          voidedById,
-          voidReason: reason,
+          voidedById: params.user.userId,
+          voidReason: params.reason,
         },
         include: { items: true },
       });

@@ -45,8 +45,15 @@ router.post('/', authorize(Role.ADMIN, Role.MANAGER, Role.CASHIER), async (req, 
 router.post('/:id/void', authorize(Role.ADMIN, Role.MANAGER), async (req, res, next) => {
   try {
     const reason = z.string().min(3).parse(req.body.reason);
-    const id = req.params.id as string;
-    const sale = await salesService.voidSale(id, req.user!.userId, reason);
+    const sale = await salesService.voidSale({
+      saleId: req.params.id as string,
+      user: {
+        userId: req.user!.userId,
+        role: req.user!.role,
+        branchId: req.user!.branchId,
+      },
+      reason,
+    });
     res.json({ success: true, data: sale });
   } catch (err) {
     next(err);
