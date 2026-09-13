@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { salesService } from './sales.service.js';
 import { authenticate, authorize } from '../../middleware/auth.middleware.js';
 import { Role, PaymentMethod } from '@prisma/client';
+import { assertBranchAccess } from '../../shared/authorization/branch.js';
 
 const router = Router();
 
@@ -30,6 +31,7 @@ const createSaleSchema = z.object({
 router.post('/', authorize(Role.ADMIN, Role.MANAGER, Role.CASHIER), async (req, res, next) => {
   try {
     const body = createSaleSchema.parse(req.body);
+    assertBranchAccess(req.user!, body.branchId);
     const sale = await salesService.createSale({
       ...body,
       cashierId: req.user!.userId,
