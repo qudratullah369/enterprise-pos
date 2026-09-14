@@ -6,6 +6,7 @@
 import { PrismaClient, Prisma, PurchaseStatus } from '@prisma/client';
 import { AppError } from '../../shared/errors/AppError.js';
 import { fifoService } from '../inventory/fifo.service.js';
+import { assertBranchAccess } from '../../shared/authorization/branch.js';
 
 const prisma = new PrismaClient();
 
@@ -95,22 +96,30 @@ export class PurchasesService {
    * Receive items on a PO. Creates InventoryLots (FIFO) and updates receivedQty.
    * Can be partial.
    */
-  async receive(
-    poId: string,
-    items: Array<{ purchaseItemId: string; quantity: number; lotNumber?: string; expiryDate?: Date }>,
-    userId?: string
-  ) {
+    async receive(params: {
+      poId: string;
+      user: { userId: string; role: string; branchId?: string | null };
+      items: Array<{ purchaseItemId: string; quantity: number; lotNumber?: string; expiryDate?: Date }>;
+  }) {
     return prisma.$transaction(async (tx) => {
       const po = await tx.purchaseOrder.findUnique({
-        where: { id: poId },
+        where: { id: params.poId },
         include: { items: true },
       });
       if (!po) throw new AppError('Purchase order not found', 404);
+
+      // Branch isolation
+      assertBranchAccess(
+        { role: params.user.role, branchId: params.user.branchId },
+        po.branchId,
+      );
+
       if (po.status === PurchaseStatus.CANCELLED || po.status === PurchaseStatus.RECEIVED) {
+
         throw new AppError(`Cannot receive on PO with status ${po.status}`, 400);
       }
 
-      for (const recv of items) {
+      for (const recv of params.items) {
         const line = po.items.find((i) => i.id === recv.purchaseItemId);
         if (!line) throw new AppError(`Purchase item ${recv.purchaseItemId} not found`, 404);
 
@@ -153,7 +162,7 @@ export class PurchasesService {
             unitCost: line.unitCost,
             referenceId: po.id,
             referenceType: 'PURCHASE_ORDER',
-            createdById: userId,
+            createdById: params.user.userId,
             notes: `PO ${po.poNumber}`,
           },
         });
@@ -166,7 +175,7 @@ export class PurchasesService {
       }
 
       // Recalculate status
-      const updatedItems = await tx.purchaseItem.findMany({ where: { purchaseOrderId: poId } });
+            const updatedItems = await tx.purchaseItem.findMany({ where: { purchaseOrderId: params.poId } });
       const allReceived = updatedItems.every((i) =>
         new Prisma.Decimal(i.receivedQty).gte(i.quantity)
       );
@@ -179,7 +188,7 @@ export class PurchasesService {
           : PurchaseStatus.ORDERED;
 
       return tx.purchaseOrder.update({
-        where: { id: poId },
+        where: { id: params.poId },
         data: {
           status: newStatus,
           receivedDate: allReceived ? new Date() : undefined,
@@ -193,18 +202,28 @@ export class PurchasesService {
     });
   }
 
-  async findById(id: string) {
-    const po = await prisma.purchaseOrder.findUnique({
-      where: { id },
-      include: {
-        items: { include: { product: true, inventoryLots: true } },
-        supplier: true,
-        branch: true,
-      },
-    });
-    if (!po) throw new AppError('Purchase order not found', 404);
-    return po;
-  }
+  async findById(params: {
+  id: string;
+  user: { userId: string; role: string; branchId?: string | null };
+}) {
+  const po = await prisma.purchaseOrder.findUnique({
+    where: { id: params.id },
+    include: {
+      items: { include: { product: true, inventoryLots: true } },
+      supplier: true,
+      branch: true,
+    },
+  });
+
+  if (!po) throw new AppError('Purchase order not found', 404);
+
+  assertBranchAccess(
+    { role: params.user.role, branchId: params.user.branchId },
+    po.branchId,
+  );
+
+  return po;
+}
 
   async list(params: { branchId?: string; status?: PurchaseStatus; page?: number; limit?: number }) {
     const page = params.page ?? 1;

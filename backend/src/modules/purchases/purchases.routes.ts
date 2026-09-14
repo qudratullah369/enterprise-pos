@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { purchasesService } from './purchases.service.js';
 import { authenticate, authorize } from '../../middleware/auth.middleware.js';
 import { Role, PurchaseStatus } from '@prisma/client';
+import { assertBranchAccess, resolveAuthorizedBranch } from '../../shared/authorization/branch.js';
 
 const router = Router();
 router.use(authenticate);
@@ -40,7 +41,11 @@ const receiveSchema = z.object({
 router.get('/', authorize(Role.ADMIN, Role.MANAGER, Role.INVENTORY), async (req, res, next) => {
   try {
     const data = await purchasesService.list({
-      branchId: (req.query.branchId as string) || req.user?.branchId || undefined,
+      branchId:
+        resolveAuthorizedBranch(
+          req.user!,
+          req.query.branchId as string | undefined,
+        ) ?? undefined,
       status: req.query.status as PurchaseStatus | undefined,
       page: req.query.page ? Number(req.query.page) : 1,
       limit: req.query.limit ? Number(req.query.limit) : 30,
@@ -53,8 +58,15 @@ router.get('/', authorize(Role.ADMIN, Role.MANAGER, Role.INVENTORY), async (req,
 
 router.get('/:id', authorize(Role.ADMIN, Role.MANAGER, Role.INVENTORY), async (req, res, next) => {
   try {
-    const id = req.params.id as string;
-    const po = await purchasesService.findById(id);
+    const po = await purchasesService.findById({
+      id: req.params.id as string,
+      user: {
+        userId: req.user!.userId,
+        role: req.user!.role,
+        branchId: req.user!.branchId,
+      },
+    });
+
     res.json({ success: true, data: po });
   } catch (err) {
     next(err);
@@ -64,6 +76,7 @@ router.get('/:id', authorize(Role.ADMIN, Role.MANAGER, Role.INVENTORY), async (r
 router.post('/', authorize(Role.ADMIN, Role.MANAGER, Role.INVENTORY), async (req, res, next) => {
   try {
     const body = createSchema.parse(req.body);
+    assertBranchAccess(req.user!, body.branchId);
     const po = await purchasesService.create({
       ...body,
       expectedDate: body.expectedDate ? new Date(body.expectedDate) : undefined,
@@ -80,16 +93,19 @@ router.post(
   async (req, res, next) => {
     try {
       const body = receiveSchema.parse(req.body);
-      const id = req.params.id as string;
 
-      const po = await purchasesService.receive(
-        id,
-        body.items.map((i) => ({
+      const po = await purchasesService.receive({
+        poId: req.params.id as string,
+        user: {
+          userId: req.user!.userId,
+          role: req.user!.role,
+          branchId: req.user!.branchId,
+        },
+        items: body.items.map((i) => ({
           ...i,
           expiryDate: i.expiryDate ? new Date(i.expiryDate) : undefined,
         })),
-        req.user!.userId
-      );
+      });
       res.json({ success: true, data: po });
     } catch (err) {
       next(err);
