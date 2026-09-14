@@ -269,12 +269,14 @@ export class SalesService {
    * Restores inventory proportionally from the original FIFO consumptions
    * and records a negative payment.
    */
-  async refundSale(
-    saleId: string,
-    refundedById: string,
-    items: Array<{ saleItemId: string; quantity: number }>,
-    reason: string
-  ) {
+  async refundSale(params: {
+    saleId: string;
+    user: { userId: string; role: string; branchId?: string | null };
+    items: Array<{ saleItemId: string; quantity: number }>;
+    reason: string;
+  }) {
+    const { saleId, user, items, reason } = params;
+
     if (!items.length) {
       throw new AppError('At least one item must be refunded', 400);
     }
@@ -291,6 +293,10 @@ export class SalesService {
       });
 
       if (!sale) throw new AppError('Sale not found', 404);
+      assertBranchAccess(
+        { role: user.role, branchId: user.branchId },
+        sale.branchId,
+      );
       if (sale.status === SaleStatus.VOIDED) {
         throw new AppError('Cannot refund a voided sale', 400);
       }
@@ -396,7 +402,7 @@ export class SalesService {
             unitCost: saleItem.costOfGoods.div(saleItem.quantity),
             referenceId: sale.id,
             referenceType: 'SALE_REFUND',
-            createdById: refundedById,
+            createdById: user.userId,
             notes: reason,
           },
         });
@@ -447,7 +453,7 @@ export class SalesService {
   }
 
   private async generateInvoiceNumber(
-
+    
     branchId: string,
     tx: Prisma.TransactionClient
   ): Promise<string> {

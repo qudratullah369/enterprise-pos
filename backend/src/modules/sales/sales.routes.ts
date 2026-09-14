@@ -79,12 +79,16 @@ router.post(
     try {
       const body = refundSchema.parse(req.body);
       const id = req.params.id as string;
-      const sale = await salesService.refundSale(
-        id,
-        req.user!.userId,
-        body.items,
-        body.reason
-      );
+      const sale = await salesService.refundSale({
+        saleId: id,
+        user: {
+          userId: req.user!.userId,
+          role: req.user!.role,
+          branchId: req.user!.branchId,
+        },
+        items: body.items,
+        reason: body.reason,
+      });
       res.json({ success: true, data: sale });
     } catch (err) {
       next(err);
