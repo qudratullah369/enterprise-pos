@@ -7,6 +7,7 @@
 
 import { PrismaClient, Prisma, PaymentMethod, SaleStatus } from '@prisma/client';
 import { AppError } from '../../shared/errors/AppError.js';
+import { assertBranchAccess } from '../../shared/authorization/branch.js';
 
 const prisma = new PrismaClient();
 
@@ -73,10 +74,13 @@ export class CashRegistersService {
   /**
    * Close a cash register session.
    * Calculates expected cash from cash payments during the session.
+   *
+   * Branch isolation: non-admin users can only close sessions from their
+   * own branch.
    */
   async close(params: {
     registerId: string;
-    userId: string; // the user closing (must own the session or be manager)
+    user: { userId: string; role: string; branchId?: string | null };
     closingCash: number;
     notes?: string;
     isManagerOverride?: boolean;
@@ -88,10 +92,17 @@ export class CashRegistersService {
     if (!register) {
       throw new AppError('Cash register session not found', 404);
     }
+
+    // Branch isolation
+    assertBranchAccess(
+      { role: params.user.role, branchId: params.user.branchId },
+      register.branchId,
+    );
+
     if (register.closedAt) {
       throw new AppError('This session is already closed', 400);
     }
-    if (register.userId !== params.userId && !params.isManagerOverride) {
+    if (register.userId !== params.user.userId && !params.isManagerOverride) {
       throw new AppError('You can only close your own cash register session', 403);
     }
 
@@ -155,10 +166,16 @@ export class CashRegistersService {
 
   /**
    * Get a summary of sales activity during an open or closed session.
+   *
+   * Branch isolation: non-admin users can only read sessions from their
+   * own branch.
    */
-  async getSessionSummary(registerId: string) {
+  async getSessionSummary(params: {
+    registerId: string;
+    user: { userId: string; role: string; branchId?: string | null };
+  }) {
     const register = await prisma.cashRegister.findUnique({
-      where: { id: registerId },
+      where: { id: params.registerId },
       include: {
         branch: { select: { id: true, code: true, name: true } },
         user: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -168,6 +185,12 @@ export class CashRegistersService {
     if (!register) {
       throw new AppError('Cash register session not found', 404);
     }
+
+    // Branch isolation
+    assertBranchAccess(
+      { role: params.user.role, branchId: params.user.branchId },
+      register.branchId,
+    );
 
     const endTime = register.closedAt ?? new Date();
 

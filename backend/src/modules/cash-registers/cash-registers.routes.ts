@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { cashRegistersService } from './cash-registers.service.js';
 import { authenticate, authorize } from '../../middleware/auth.middleware.js';
 import { Role } from '@prisma/client';
+import { assertBranchAccess, resolveAuthorizedBranch } from '../../shared/authorization/branch.js';
 
 const router = Router();
 router.use(authenticate);
@@ -25,6 +26,7 @@ router.post(
   async (req, res, next) => {
     try {
       const body = openSchema.parse(req.body);
+      assertBranchAccess(req.user!, body.branchId);
       const data = await cashRegistersService.open({
         branchId: body.branchId,
         userId: req.user!.userId,
@@ -61,12 +63,16 @@ router.post(
       const id = req.params.id as string;
 
       const data = await cashRegistersService.close({
-        registerId: id,
-        userId: req.user!.userId,
-        closingCash: body.closingCash,
-        notes: body.notes,
-        isManagerOverride: isManager,
-      });
+  registerId: id,
+  user: {
+    userId: req.user!.userId,
+    role: req.user!.role,
+    branchId: req.user!.branchId,
+  },
+  closingCash: body.closingCash,
+  notes: body.notes,
+  isManagerOverride: isManager,
+});
       res.json({ success: true, data });
     } catch (err) {
       next(err);
@@ -81,7 +87,14 @@ router.get(
   async (req, res, next) => {
     try {
       const id = req.params.id as string;
-      const data = await cashRegistersService.getSessionSummary(id);
+      const data = await cashRegistersService.getSessionSummary({
+  registerId: id,
+  user: {
+    userId: req.user!.userId,
+    role: req.user!.role,
+    branchId: req.user!.branchId,
+  },
+});
       res.json({ success: true, data });
     } catch (err) {
       next(err);
@@ -96,7 +109,11 @@ router.get(
   async (req, res, next) => {
     try {
       const data = await cashRegistersService.list({
-        branchId: req.query.branchId as string | undefined,
+        branchId:
+          resolveAuthorizedBranch(
+            req.user!,
+            req.query.branchId as string | undefined,
+          ) ?? undefined,
         userId: req.query.userId as string | undefined,
         openOnly: req.query.openOnly === 'true',
         page: req.query.page ? Number(req.query.page) : 1,
