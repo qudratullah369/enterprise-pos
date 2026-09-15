@@ -6,7 +6,18 @@
  * branchId = null is meaningful for ADMIN users only.
  */
 export interface BranchScopedUser {
+  id?: string;
   role: string;
+  branchId?: string | null;
+}
+
+/**
+ * Minimal product shape required for branch-scoped product authorization.
+ *
+ * branchId = null / undefined means the product is global.
+ */
+export interface BranchScopedProduct {
+  id?: string;
   branchId?: string | null;
 }
 
@@ -90,13 +101,82 @@ export function assertBranchAccess(
     throw new AppError('User has no assigned branch', 403);
   }
 
-  if (
-    requestedBranchId &&
-    requestedBranchId !== user.branchId
-  ) {
+  if (requestedBranchId && requestedBranchId !== user.branchId) {
     throw new AppError(
       'Access to requested branch is forbidden',
       403,
     );
   }
+}
+
+function isAdmin(user: BranchScopedUser): boolean {
+  return user.role === 'ADMIN';
+}
+
+function isGlobalProduct(product: BranchScopedProduct): boolean {
+  return product.branchId == null;
+}
+
+function isSameBranch(
+  product: BranchScopedProduct,
+  user: BranchScopedUser,
+): boolean {
+  return (
+    product.branchId != null &&
+    user.branchId != null &&
+    product.branchId === user.branchId
+  );
+}
+
+/**
+ * Global product: readable by all roles.
+ * Branch product: readable by the same branch; ADMIN can read any branch.
+ * Missing branchId is treated as a global product.
+ *
+ * Throws AppError(403) when access is denied.
+ */
+export function assertProductReadable(
+  product: BranchScopedProduct,
+  user: BranchScopedUser,
+): void {
+  if (isGlobalProduct(product)) return;
+
+  if (isAdmin(user)) return;
+
+  if (isSameBranch(product, user)) return;
+
+  throw new AppError(
+    'Product is not readable for this user/branch',
+    403,
+  );
+}
+
+/**
+ * Global product: writable only by ADMIN.
+ * Branch product: writable by the same branch; ADMIN can write any branch.
+ * Missing branchId is treated as a global product.
+ *
+ * Throws AppError(403) when access is denied.
+ */
+export function assertProductWritable(
+  product: BranchScopedProduct,
+  user: BranchScopedUser,
+): void {
+  if (isGlobalProduct(product)) {
+    if (isAdmin(user)) return;
+
+    throw new AppError(
+      'Global product is writable only by ADMIN',
+      403,
+    );
+  }
+
+  if (isAdmin(user)) return;
+
+  if (isSameBranch(product, user)) return;
+
+  throw new AppError(
+    'Product is not writable for this user/branch',
+    403,
+  );
 }
